@@ -13,14 +13,13 @@ import {CurrencySettler} from "@uniswap/v4-core/test/utils/CurrencySettler.sol";
 
 
 contract CommissionHook is BaseHook, Ownable {
-    // using CurrencyLibrary for Currency;
     using CurrencySettler for Currency;
     using BalanceDeltaLibrary for BalanceDelta;
 
-    // Commission tiers in USD (using 6 decimals for precision)
-    uint256 constant TIER_1_THRESHOLD = 100 * 1e6;  // $100
-    uint256 constant TIER_2_THRESHOLD = 1000 * 1e6; // $1,000
-    uint256 constant TIER_3_THRESHOLD = 10000 * 1e6; // $10,000
+    // Commission tiers in USD (using 18 decimals)
+    uint256 constant TIER_1_THRESHOLD = 100 ether;  // $100
+    uint256 constant TIER_2_THRESHOLD = 1000 ether; // $1,000
+    uint256 constant TIER_3_THRESHOLD = 10000 ether; // $10,000
 
     // Commission rates (in basis points, 1% = 100)
     uint256 constant TIER_1_RATE = 50;  // 0.5%
@@ -63,7 +62,7 @@ contract CommissionHook is BaseHook, Ownable {
     function _afterSwap(
         address /*sender*/,
         PoolKey calldata key,
-        IPoolManager.SwapParams calldata swapParams,
+        IPoolManager.SwapParams calldata /*swapParams*/,
         BalanceDelta delta,
         bytes calldata /*hookData*/
     ) internal override onlyPoolManager returns (bytes4, int128) {
@@ -72,14 +71,8 @@ contract CommissionHook is BaseHook, Ownable {
 
         bool docIsToken0 = Currency.unwrap(key.currency0) == i_docToken;
 
-        // Determine which delta to use for the swap value and commission
-        int128 docDelta;
-        
-        if (docIsToken0) {
-            docDelta = delta.amount0();
-        } else {
-            docDelta = delta.amount1(); 
-        }
+        // Determine which delta to use for the commission
+        int128 docDelta = docIsToken0 ? delta.amount0() : delta.amount1();
         
         // Only take commission when user is buying DOC (delta is positive)
         if (docDelta <= 0) return (this.afterSwap.selector, 0);
@@ -90,22 +83,13 @@ contract CommissionHook is BaseHook, Ownable {
         // Calculate commission amount
         uint256 commissionAmount = (uint256(uint128(docDelta)) * commissionRate) / 10000;
         
-        // int128 modifiedDocDelta = docDelta - int128(uint128(commissionAmount));
-        // BalanceDelta modifiedDelta;
+        int128 commissionDelta = int128(uint128(commissionAmount));
 
-        // Take commission from the user
-        if (swapParams.zeroForOne && !docIsToken0) {
-            // If user is selling Token 0 and buying Token 1
-            key.currency1.take(poolManager, s_commissionRecipient, commissionAmount, true);
-            // modifiedDelta = BalanceDelta.toBalanceDelta(delta.amount0(), modifiedDocDelta);
-            
-        } else if (!swapParams.zeroForOne && docIsToken0) {
-            key.currency0.take(poolManager, s_commissionRecipient, commissionAmount, true);
-            // modifiedDelta = BalanceDelta.toBalanceDelta(modifiedDocDelta, delta.amount1());
-        }
+        // Take DOC commission
+        Currency doc = docIsToken0 ? key.currency0 : key.currency1;
+        poolManager.take(doc, s_commissionRecipient, commissionAmount);
         
-        // return (this.afterSwap.selector, modifiedDelta);
-        return (this.afterSwap.selector, 0);
+        return (this.afterSwap.selector, commissionDelta);
     }
 
     function _isDocSwap(PoolKey calldata key) internal view returns (bool) {
